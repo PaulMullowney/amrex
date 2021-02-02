@@ -196,6 +196,43 @@ void mlpoisson_gsrb (Box const& box, Array4<Real> const& phi,
 }
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void mlpoisson_gsrb_new (Box const& box, Array4<Real> const& phi,
+                     Array4<Real const> const& rhs,
+                     Real dhx, Real dhy, Real dhz,
+                     int redblack) noexcept
+{
+    const auto lo = amrex::lbound(box);
+    const auto hi = amrex::ubound(box);
+
+    constexpr Real omega = Real(1.15);
+
+#if __CUDA_ARCH__
+  if (threadIdx.x==0 && threadIdx.y==0 && threadIdx.z==0 &&
+      blockIdx.x==0 && blockIdx.y==0 && blockIdx.z==0) printf("phi(0,0,0)=%1.16g, rhs(0,0,0)=%1.16g\n",phi(0,0,0),rhs(0,0,0));
+#endif
+
+    const Real gamma = Real(-2.)*(dhx+dhy+dhz);
+
+    for         (int k = lo.z; k <= hi.z; ++k) {
+        for     (int j = lo.y; j <= hi.y; ++j) {
+            AMREX_PRAGMA_SIMD
+            for (int i = lo.x; i <= hi.x; ++i) {
+                if ((i+j+k+redblack)%2 == 0) {
+		  Real g_m_d = gamma;
+
+                    Real res = rhs(i,j,k) - gamma*phi(i,j,k)
+                        - dhx*(phi(i-1,j,k) + phi(i+1,j,k))
+                        - dhy*(phi(i,j-1,k) + phi(i,j+1,k))
+                        - dhz*(phi(i,j,k-1) + phi(i,j,k+1));
+
+                    phi(i,j,k) = phi(i,j,k) + omega/g_m_d * res;
+                }
+            }
+        }
+    }
+}
+
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mlpoisson_gsrb_os (Box const& box, Array4<Real> const& phi,
                         Array4<Real const> const& rhs,
                         Array4<int const> const& osm,
