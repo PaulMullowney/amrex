@@ -8,8 +8,12 @@ int main (int argc, char* argv[])
     amrex::Initialize(argc, argv);
 
     {
+        BL_PROFILE("main");
         MyTest mytest;
-        mytest.solve();
+        for(int i=0;i<mytest.getNumTrials();++i) {
+            mytest.initData();
+            mytest.solve();
+        }
         mytest.writePlotfile();
     }
 

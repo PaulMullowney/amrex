@@ -43,7 +43,9 @@ MLMG::MLMG (MLLinOp& a_lp)
     : linop(a_lp),
       namrlevs(a_lp.NAMRLevels()),
       finest_amr_lev(a_lp.NAMRLevels()-1)
-{}
+{
+    linop.setSmoothNumSweeps(a_lp.getSmoothNumSweeps());
+}
 
 MLMG::~MLMG ()
 {}
@@ -1347,6 +1349,7 @@ void
 MLMG::prepareForNSolve ()
 {
     ns_linop = linop.makeNLinOp(nsolve_grid_size);
+    ns_linop->setSmoothNumSweeps(linop.getSmoothNumSweeps());
 
     const int ncomp = linop.getNComp();
     int nghost = 0;

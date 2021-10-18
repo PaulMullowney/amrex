@@ -185,6 +185,14 @@ public:
     void setMaxOrder (int o) noexcept { maxorder = o; }
     int getMaxOrder () const noexcept { return maxorder; }
 
+    void setSmoothNumSweeps (int nsweeps) noexcept {
+        m_smooth_num_sweeps = nsweeps;
+    }
+    int getSmoothNumSweeps () const noexcept {
+        return m_smooth_num_sweeps;
+    }
+    int m_smooth_num_sweeps = 1;
+
     void setEnforceSingularSolvable (bool o) noexcept { enforceSingularSolvable = o; }
     bool getEnforceSingularSolvable () const noexcept { return enforceSingularSolvable; }
 
