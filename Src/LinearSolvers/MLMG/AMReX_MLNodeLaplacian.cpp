@@ -20,6 +20,11 @@ MLNodeLaplacian::MLNodeLaplacian (const Vector<Geometry>& a_geom,
                                   const Vector<FabFactory<FArrayBox> const*>& a_factory,
                                   Real  a_const_sigma)
 {
+#ifdef AMREX_USE_GPU
+    m_smooth_num_sweeps = 4;
+#else
+    m_smooth_num_sweeps = 2;
+#endif
     define(a_geom, a_grids, a_dmap, a_info, a_factory, a_const_sigma);
 }
 
@@ -31,6 +36,11 @@ MLNodeLaplacian::MLNodeLaplacian (const Vector<Geometry>& a_geom,
                                   const Vector<EBFArrayBoxFactory const*>& a_factory,
                                   Real  a_const_sigma)
 {
+#ifdef AMREX_USE_GPU
+    m_smooth_num_sweeps = 4;
+#else
+    m_smooth_num_sweeps = 2;
+#endif
     define(a_geom, a_grids, a_dmap, a_info, a_factory, a_const_sigma);
 }
 #endif

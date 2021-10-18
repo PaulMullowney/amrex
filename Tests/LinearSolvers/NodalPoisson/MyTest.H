@@ -48,7 +48,7 @@ private:
     bool semicoarsening = false;
     int max_coarsening_level = 30;
     int max_semicoarsening_level = 0;
-    //int smooth_num_sweeps = 4;
+    int smooth_num_sweeps = 2;
 
     bool use_hypre = false;
     bool do_plots = true;

@@ -27,7 +27,7 @@ MyTest::solve ()
     if (composite_solve)
     {
         MLNodeLaplacian linop(geom, grids, dmap, info);
-        //linop.setSmoothNumSweeps(smooth_num_sweeps);
+        linop.setSmoothNumSweeps(smooth_num_sweeps);
 
         linop.setDomainBC({AMREX_D_DECL(LinOpBCType::Dirichlet,
                                         LinOpBCType::Dirichlet,
@@ -159,7 +159,7 @@ MyTest::readParameters ()
     pp.query("semicoarsening", semicoarsening);
     pp.query("max_coarsening_level", max_coarsening_level);
     pp.query("max_semicoarsening_level", max_semicoarsening_level);
-    //pp.query("smooth_num_sweeps", smooth_num_sweeps);
+    pp.query("smooth_num_sweeps", smooth_num_sweeps);
 
     pp.query("do_plots", do_plots);
     pp.query("num_trials", num_trials);

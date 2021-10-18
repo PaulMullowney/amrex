@@ -31,21 +31,18 @@ MyTest::solve ()
 
     LPInfo info;
     info.setMaxCoarseningLevel(max_coarsening_level);
-
+    info.do_agglomeration=false;
     std::unique_ptr<MLABecLaplacian> mlabec;
-    if (do_overset) {
-        mlabec = std::make_unique<MLABecLaplacian>(Vector<Geometry>{geom},
-                                                   Vector<BoxArray>{grids},
-                                                   Vector<DistributionMapping>{dmap},
-                                                   Vector<iMultiFab const*>{&oversetmask},
-                                                   info);
-    } else {
-        mlabec = std::make_unique<MLABecLaplacian>(Vector<Geometry>{geom},
-                                                   Vector<BoxArray>{grids},
-                                                   Vector<DistributionMapping>{dmap},
-                                                   info);
-    }
+    Vector<Geometry> geom_vec = {geom};
+    Vector<BoxArray> grids_vec = {grids};
+    Vector<DistributionMapping> dmap_vec = {dmap};
+    Vector<iMultiFab const*> oversetmask_vec = {&oversetmask};
 
+    if (do_overset) {
+        mlabec = std::make_unique<MLABecLaplacian>(geom_vec, grids_vec, dmap_vec, oversetmask_vec, info);
+    } else {
+        mlabec = std::make_unique<MLABecLaplacian>(geom_vec, grids_vec, dmap_vec, info);
+    }
     mlabec->setDomainBC(mlmg_lobc, mlmg_hibc);
     mlabec->setLevelBC(0, &exact_phi);
 
@@ -62,10 +59,15 @@ MyTest::solve ()
     amrex::average_cellcenter_to_face(GetArrOfPtrs(face_bcoef),
                                       bcoef, geom);
     mlabec->setBCoeffs(0, amrex::GetArrOfConstPtrs(face_bcoef));
+    mlabec->setSmoothNumSweeps(smooth_num_sweeps);
 
     MLMG mlmg(*mlabec);
     mlmg.setVerbose(verbose);
     mlmg.setBottomVerbose(bottom_verbose);
+    if (use_nsolve) {
+        mlmg.setNSolve(use_nsolve);
+        mlmg.setNSolveGridSize(nsolve_grid_size);
+    }
 
 #ifdef AMREX_USE_HYPRE
     if (use_hypre) {
@@ -80,6 +82,7 @@ MyTest::solve ()
 void
 MyTest::writePlotfile ()
 {
+    if (!do_plots) return;
     Vector<std::string> varname = {"solution", "rhs", "exact_solution", "error", "acoef", "bcoef"};
     MultiFab plotmf(grids, dmap, varname.size(), 0);
     MultiFab::Copy(plotmf, phi       , 0, 0, 1, 0);
@@ -110,6 +113,12 @@ MyTest::readParameters ()
     pp.query("max_coarsening_level", max_coarsening_level);
 
     pp.query("do_overset", do_overset);
+
+    pp.query("do_plots", do_plots);
+    pp.query("num_trials", num_trials);
+    pp.query("nsolve_grid_size", nsolve_grid_size);
+    pp.query("use_nsolve", use_nsolve);
+    pp.query("smooth_num_sweeps", smooth_num_sweeps);
 
 #ifdef AMREX_USE_HYPRE
     pp.query("use_hypre", use_hypre);
@@ -142,8 +151,8 @@ MyTest::initData ()
     bcoef.define(grids, dmap, 1, 1);
     oversetmask.define(grids, dmap, 1, 0);
 
-    Box overset_box = amrex::grow(geom.Domain(), -n_cell/4); // middle of the domain
-    // Box overset_box = amrex::shift(geom.Domain(), 0, n_cell/2); // right half
+    Box box = amrex::grow(geom.Domain(), -n_cell/4);
+    Box overset_box = amrex::shift(box, 0, 1);
 
     const auto prob_lo = geom.ProbLoArray();
     const auto prob_hi = geom.ProbHiArray();
@@ -151,6 +160,24 @@ MyTest::initData ()
     auto a = ascalar;
     auto b = bscalar;
     auto loverset = do_overset;
+
+
+#if 0
+
+    auto phi_ma = phi.arrays();
+    auto rhs_ma = rhs.arrays();
+    auto exact_ma = exact_phi.arrays();
+    auto alpha_ma = acoef.arrays();
+    auto beta_ma = bcoef.arrays();
+    auto mask_ma = oversetmask.arrays();
+
+    amrex::ParallelFor(phi,
+    [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+    {
+
+
+#else
+    
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -232,4 +259,5 @@ MyTest::initData ()
             }
         });
     }
+#endif
 }

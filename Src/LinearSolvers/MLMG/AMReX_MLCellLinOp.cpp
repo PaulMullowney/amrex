@@ -72,6 +72,7 @@ namespace {
 
 MLCellLinOp::MLCellLinOp ()
 {
+    m_smooth_num_sweeps = 1;
     m_ixtype = IntVect::TheCellVector();
 }
 
@@ -480,15 +481,18 @@ MLCellLinOp::smooth (int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
                      bool skip_fillboundary) const
 {
     BL_PROFILE("MLCellLinOp::smooth()");
-    for (int redblack = 0; redblack < 2; ++redblack)
+    for (int ns = 0; ns < m_smooth_num_sweeps; ++ns)
     {
-        applyBC(amrlev, mglev, sol, BCMode::Homogeneous, StateMode::Solution,
-                nullptr, skip_fillboundary);
+        for (int redblack = 0; redblack < 2; ++redblack)
+        {
+            applyBC(amrlev, mglev, sol, BCMode::Homogeneous, StateMode::Solution,
+                    nullptr, skip_fillboundary);
 #ifdef AMREX_SOFT_PERF_COUNTERS
-        perf_counters.smooth(sol);
+            perf_counters.smooth(sol);
 #endif
-        Fsmooth(amrlev, mglev, sol, rhs, redblack);
-        skip_fillboundary = false;
+            Fsmooth(amrlev, mglev, sol, rhs, redblack);
+            skip_fillboundary = false;
+        }
     }
 }
 
