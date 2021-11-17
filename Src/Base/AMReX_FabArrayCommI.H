@@ -23,6 +23,7 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
 
     if (ParallelContext::NProcsSub() == 1)
     {
+        BL_PROFILE_VAR("FabArray::FillBoundary_nowait() 1-Proc Local", blp_var1);
         //
         // There can only be local work to do.
         //
@@ -47,12 +48,14 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
         {
             FB_local_copy_cpu(TheFB, scomp, ncomp);
         }
+        BL_PROFILE_VAR_STOP(blp_var1);
 
         return;
     }
 
 #ifdef BL_USE_MPI
 
+    BL_PROFILE_VAR("FabArray::FillBoundary_nowait() PostRcvs", blp_var2);
     //
     // Do this before prematurely exiting if running in parallel.
     // Otherwise sequence numbers will not match across MPI processes.
@@ -89,6 +92,7 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
         fbd->recv_stat.resize(N_rcvs);
     }
 
+    BL_PROFILE_VAR_STOP(blp_var2);
     //
     // Post send's
     //
@@ -101,8 +105,13 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
 
     if (N_snds > 0)
     {
+        BL_PROFILE_VAR("FabArray::FillBoundary_nowait() PrepareSends", blp_var3);
+
         PrepareSendBuffers(*TheFB.m_SndTags, the_send_data, send_data, send_size, send_rank,
                            send_reqs, send_cctc, ncomp);
+
+        BL_PROFILE_VAR_STOP(blp_var3);
+        BL_PROFILE_VAR("FabArray::FillBoundary_nowait() PostSends (pack_send_buffer_gpu)", blp_var4);
 
 #ifdef AMREX_USE_GPU
         if (Gpu::inLaunchRegion())
@@ -125,6 +134,7 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
 
         AMREX_ASSERT(send_reqs.size() == N_snds);
         PostSnds(send_data, send_size, send_rank, send_reqs, SeqNum);
+        BL_PROFILE_VAR_STOP(blp_var4);
     }
 
     FillBoundary_test();
@@ -132,6 +142,8 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
     //
     // Do the local work.  Hope for a bit of communication/computation overlap.
     //
+    BL_PROFILE_VAR("FabArray::FillBoundary_nowait() Local Work", blp_var5);
+
     if (N_locs > 0)
     {
 #ifdef AMREX_USE_GPU
@@ -155,6 +167,7 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
 
         FillBoundary_test();
     }
+    BL_PROFILE_VAR_STOP(blp_var5);
 
 #endif /*BL_USE_MPI*/
 }
@@ -174,6 +187,8 @@ FabArray<FAB>::FillBoundary_finish ()
     const int N_rcvs = TheFB->m_RcvTags->size();
     if (N_rcvs > 0)
     {
+        BL_PROFILE_VAR("FabArray::FillBoundary_finish() WaitAll", blp_var6);
+
         Vector<const CopyComTagsContainer*> recv_cctc(N_rcvs,nullptr);
         for (int k = 0; k < N_rcvs; k++)
         {
@@ -197,6 +212,9 @@ FabArray<FAB>::FillBoundary_finish ()
         }
 
         bool is_thread_safe = TheFB->m_threadsafe_rcv;
+
+        BL_PROFILE_VAR_STOP(blp_var6);
+        BL_PROFILE_VAR("FabArray::FillBoundary_finish() Receive (unpack_recv_buffer_gpu)", blp_var7);
 
 #ifdef AMREX_USE_GPU
         if (Gpu::inLaunchRegion())
@@ -227,8 +245,10 @@ FabArray<FAB>::FillBoundary_finish ()
             amrex::The_FA_Arena()->free(fbd->the_recv_data);
             fbd->the_recv_data = nullptr;
         }
+        BL_PROFILE_VAR_STOP(blp_var7);
     }
 
+    BL_PROFILE_VAR("FabArray::FillBoundary_finish() Cleanup", blp_var8);
     const int N_snds = TheFB->m_SndTags->size();
     if (N_snds > 0) {
         Vector<MPI_Status> stats(fbd->send_reqs.size());
@@ -238,6 +258,7 @@ FabArray<FAB>::FillBoundary_finish ()
     }
 
     fbd.reset();
+    BL_PROFILE_VAR_STOP(blp_var8);
 
 #endif
 }
@@ -298,6 +319,7 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
         // we're doing plus()s on cell-centered data.  Don't do plus()s on
         // non-cell-centered data this simplistic way.
         //
+        BL_PROFILE_VAR("FabArray::ParallelCopy_nowait() MFIter", blp_var9);
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -322,14 +344,15 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
                 }
             }
         }
-
+        BL_PROFILE_VAR_STOP(blp_var9);
         return;
     }
 
     const CPC& thecpc = (a_cpc) ? *a_cpc : getCPC(dnghost, src, snghost, period);
 
     if (ParallelContext::NProcsSub() == 1)
-    {
+    { 
+        BL_PROFILE_VAR("FabArray::ParallelCopy_nowait() 1-Proc Local", blp_var10);
         //
         // There can only be local work to do.
         //
@@ -346,7 +369,7 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
         {
             PC_local_cpu(thecpc, src, scomp, dcomp, ncomp, op);
         }
-
+        BL_PROFILE_VAR_STOP(blp_var10);
         return;
     }
 
@@ -378,6 +401,8 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
 
     for (int ipass = 0; ipass < ncomp; )
     {
+        BL_PROFILE_VAR("FabArray::ParallelCopy_nowait() PostRcvs", blp_var11);
+
         pcd = std::make_unique<PCData<FAB>>();
         pcd->cpc = &thecpc;
         pcd->src = &src;
@@ -406,6 +431,7 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
             pcd->actual_n_rcvs = N_rcvs - std::count(pcd->recv_size.begin(), pcd->recv_size.end(), 0);
         }
 
+        BL_PROFILE_VAR_STOP(blp_var11);
         //
         // Post send's
         //
@@ -416,8 +442,12 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
 
         if (N_snds > 0)
         {
+            BL_PROFILE_VAR("FabArray::ParallelCopy_nowait() PrepareSends", blp_var12);
             src.PrepareSendBuffers(*thecpc.m_SndTags, pcd->the_send_data, send_data, send_size,
                                    send_rank, pcd->send_reqs, send_cctc, NC);
+
+            BL_PROFILE_VAR_STOP(blp_var12);
+            BL_PROFILE_VAR("FabArray::ParallelCopy_nowait() PostSends (pack_send_buffer_gpu)", blp_var13);
 
 #ifdef AMREX_USE_GPU
             if (Gpu::inLaunchRegion())
@@ -432,7 +462,10 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
 
             AMREX_ASSERT(pcd->send_reqs.size() == N_snds);
             FabArray<FAB>::PostSnds(send_data, send_size, send_rank, pcd->send_reqs, pcd->tag);
+            BL_PROFILE_VAR_STOP(blp_var13);
         }
+
+        BL_PROFILE_VAR("FabArray::ParallelCopy_nowait() Local Work", blp_var14);
 
         //
         // Do the local work.  Hope for a bit of communication/computation overlap.
@@ -450,6 +483,7 @@ FabArray<FAB>::ParallelCopy_nowait (const FabArray<FAB>& src,
                 PC_local_cpu(thecpc, src, SC, DC, NC, op);
             }
         }
+        BL_PROFILE_VAR_STOP(blp_var14);
 
         if (!last_iter)
         {
@@ -484,6 +518,7 @@ FabArray<FAB>::ParallelCopy_finish ()
 
     if (N_rcvs > 0)
     {
+        BL_PROFILE_VAR("FabArray::ParallelCopy_finish() WaitAll", blp_var15);
         Vector<const CopyComTagsContainer*> recv_cctc(N_rcvs,nullptr);
         for (int k = 0; k < N_rcvs; ++k)
         {
@@ -507,6 +542,9 @@ FabArray<FAB>::ParallelCopy_finish ()
 
         bool is_thread_safe = thecpc->m_threadsafe_rcv;
 
+        BL_PROFILE_VAR_STOP(blp_var15);
+        BL_PROFILE_VAR("FabArray::ParallelCopy_finish() Receive (unpack_recv_buffer_gpu)", blp_var16);
+
 #ifdef AMREX_USE_GPU
         if (Gpu::inLaunchRegion())
         {
@@ -525,8 +563,11 @@ FabArray<FAB>::ParallelCopy_finish ()
             amrex::The_FA_Arena()->free(pcd->the_recv_data);
             pcd->the_recv_data = nullptr;
         }
+        BL_PROFILE_VAR_STOP(blp_var16);
+
     }
 
+    BL_PROFILE_VAR("FabArray::ParallelCopy_finish() Cleanup", blp_var17);
     if (N_snds > 0) {
         if (! thecpc->m_SndTags->empty()) {
             Vector<MPI_Status> stats(pcd->send_reqs.size());
@@ -537,6 +578,7 @@ FabArray<FAB>::ParallelCopy_finish ()
     }
 
     pcd.reset();
+    BL_PROFILE_VAR_STOP(blp_var17);
 
 #endif /*BL_USE_MPI*/
 

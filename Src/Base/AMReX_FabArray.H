@@ -197,6 +197,53 @@ struct PCData {
 
 };
 
+#ifndef STASHED_BUFFERS
+#define STASHED_BUFFERS
+#endif
+//#undef STASHED_BUFFERS
+
+#ifdef STASHED_BUFFERS
+
+struct SendRecvDeviceTagsNwarpsData_struct {
+    char * d_buffer = nullptr;
+    char * h_buffer = nullptr;
+    Vector<char*> data;
+    Vector<std::size_t> size;
+    std::size_t offset_nwarps = 0;
+    std::size_t sizeof_nwarps = 0;
+    int ntags = 0;
+    int ntotwarps = 0;
+};
+
+typedef SendRecvDeviceTagsNwarpsData_struct SendRecvDeviceTagsNwarpsData;
+
+struct FBLocalDeviceTagsNwarpsData_struct {
+    char * d_buffer = nullptr;
+    char * h_buffer = nullptr;
+    Vector<Box> sbox;
+    Vector<Box> dbox;
+    std::size_t offset_nwarps = 0;
+    std::size_t sizeof_nwarps = 0;
+    int ntags = 0;
+    int ntotwarps = 0;
+};
+
+typedef FBLocalDeviceTagsNwarpsData_struct FBLocalDeviceTagsNwarpsData;
+
+struct PCLocalDeviceTagsNwarpsData_struct {
+    char * d_buffer = nullptr;
+    char * h_buffer = nullptr;
+    std::size_t nbytes = 0;
+    std::size_t offset_nwarps = 0;
+    std::size_t sizeof_nwarps = 0;
+    int ntags = 0;
+    int ntotwarps = 0;
+};
+
+typedef PCLocalDeviceTagsNwarpsData_struct PCLocalDeviceTagsNwarpsData;
+
+#endif
+
 template <typename T>
 struct MultiArray4
 {
@@ -316,6 +363,13 @@ public:
 
     //! The destructor -- deletes all FABs in the array.
     virtual ~FabArray ();
+
+#ifdef STASHED_BUFFERS
+    Vector<SendRecvDeviceTagsNwarpsData> send_device_tags_nwarps;
+    Vector<SendRecvDeviceTagsNwarpsData> recv_device_tags_nwarps;
+    Vector<FBLocalDeviceTagsNwarpsData> fblocal_device_tags_nwarps;
+    Vector<PCLocalDeviceTagsNwarpsData> pclocal_device_tags_nwarps;
+#endif
 
     FabArray (FabArray<FAB>&& rhs) noexcept;
     FabArray<FAB>& operator= (FabArray<FAB>&& rhs) noexcept;
@@ -1596,6 +1650,32 @@ FabArray<FAB>::operator= (FabArray<FAB>&& rhs) noexcept
 template <class FAB>
 FabArray<FAB>::~FabArray ()
 {
+#ifdef STASHED_BUFFERS
+    for (auto sdt : send_device_tags_nwarps) {
+        The_Arena()->free(sdt.d_buffer);
+        The_Pinned_Arena()->free(sdt.h_buffer);
+    }
+    send_device_tags_nwarps.clear();
+
+    for (auto rdt : recv_device_tags_nwarps) {
+        The_Arena()->free(rdt.d_buffer);
+        The_Pinned_Arena()->free(rdt.h_buffer);
+    }
+    recv_device_tags_nwarps.clear();
+
+    for (auto fbldt : fblocal_device_tags_nwarps) {
+        The_Arena()->free(fbldt.d_buffer);
+        The_Pinned_Arena()->free(fbldt.h_buffer);
+    }
+    fblocal_device_tags_nwarps.clear();
+
+    for (auto pcldt : pclocal_device_tags_nwarps) {
+        The_Arena()->free(pcldt.d_buffer);
+        The_Pinned_Arena()->free(pcldt.h_buffer);
+    }
+    pclocal_device_tags_nwarps.clear();
+#endif
+
     m_FA_stats.recordDelete();
     clear();
 }
@@ -2682,7 +2762,7 @@ template <class FAB>
 void
 FabArray<FAB>::FillBoundary_nowait (int scomp, int ncomp, const Periodicity& period, bool cross)
 {
-    BL_PROFILE("FillBoundary_nowait()");
+    BL_PROFILE("FabArray::FillBoundary_nowait()");
     FBEP_nowait(scomp, ncomp, nGrowVect(), period, cross);
 }
 
@@ -2691,7 +2771,7 @@ void
 FabArray<FAB>::FillBoundary_nowait (int scomp, int ncomp, const IntVect& nghost,
                                     const Periodicity& period, bool cross)
 {
-    BL_PROFILE("FillBoundary_nowait()");
+    BL_PROFILE("FabArray::FillBoundary_nowait()");
     FBEP_nowait(scomp, ncomp, nghost, period, cross);
 }
 

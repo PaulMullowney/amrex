@@ -49,6 +49,74 @@ struct CellAtomicAdd
     }
 };
 
+#ifdef STASHED_BUFFERS
+
+template <class T, class S>
+void
+build_device_tags_nwarps(Vector<Array4CopyTag<T> > & tags,
+                         S * stashed_buf)
+{
+    detail::build_device_tags_nwarps(tags, stashed_buf);
+}
+
+
+template <class T, class F>
+void
+foo (Vector<Array4CopyTag<T> > const& tags, int scomp, int dcomp, int ncomp,
+     char * d_buffer, int ntotwarps, int ntags, std::size_t offset_nwarps, F && f)
+{
+    detail::ParallelFor_doit(tags, d_buffer, ntotwarps, ntags, offset_nwarps,
+        [=] AMREX_GPU_DEVICE (
+#ifdef AMREX_USE_DPCPP
+            sycl::nd_item<1> const& /*item*/,
+#endif
+            int icell, int ncells, int i, int j, int k, Array4CopyTag<T> const tag) noexcept
+        {
+            for (int n = 0; n < ncomp; ++n) {
+                f(&(tag.dfab(i,j,k,n+dcomp)),
+                  tag.sfab(i+tag.offset.x,j+tag.offset.y,k+tag.offset.z,n+scomp));
+            }
+        });
+}
+
+template <typename T, std::enable_if_t<amrex::IsStoreAtomic<T>::value,int> = 0>
+void
+foo_atomic_cpy (Vector<Array4CopyTag<T> > const& tags, int scomp, int dcomp, int ncomp,
+                char * d_buffer, int ntotwarps, int ntags, std::size_t offset_nwarps,
+                Vector<Array4Tag<int> > const&)
+{
+    foo<T>(tags, scomp, dcomp, ncomp, d_buffer, ntotwarps, ntags, offset_nwarps, CellStore<T>());
+}
+
+template <typename T, std::enable_if_t<!amrex::IsStoreAtomic<T>::value,int> = 0>
+void
+foo_atomic_cpy (Vector<Array4CopyTag<T> > const& tags, int scomp, int dcomp, int ncomp,
+                char * d_buffer, int ntotwarps, int ntags, std::size_t offset_nwarps,
+                Vector<Array4Tag<int> > const& masks)
+{
+    amrex::Abort("xxxxx See the fab_to_fab version below. TODO This function still has a bug.  Even if we fix the bug, it should still be avoided because it is slow due to the lack of atomic operations for this type.");
+}
+
+template <typename T, std::enable_if_t<amrex::HasAtomicAdd<T>::value,int> = 0>
+void
+foo_atomic_add (Vector<Array4CopyTag<T> > const& tags, int scomp, int dcomp, int ncomp,
+                char * d_buffer, int ntotwarps, int ntags, std::size_t offset_nwarps,
+                Vector<Array4Tag<int> > const&)
+{
+    foo<T>(tags, scomp, dcomp, ncomp, d_buffer, ntotwarps, ntags, offset_nwarps, CellAtomicAdd<T>());
+}
+
+template <typename T, std::enable_if_t<!amrex::HasAtomicAdd<T>::value,int> = 0>
+void
+foo_atomic_add (Vector<Array4CopyTag<T> > const& tags, int scomp, int dcomp, int ncomp,
+                char * d_buffer, int ntotwarps, int ntags, std::size_t offset_nwarps,
+                Vector<Array4Tag<int> > const& masks)
+{
+    amrex::Abort("xxxxx See the fab_to_fab version below. TODO This function still has a bug.  Even if we fix the bug, it should still be avoided because it is slow due to the lack of atomic operations for this type.");
+}
+
+#endif
+
 template <class T, class F>
 void
 fab_to_fab (Vector<Array4CopyTag<T> > const& copy_tags, int scomp, int dcomp, int ncomp,
@@ -297,26 +365,89 @@ FabArray<FAB>::FB_local_copy_gpu (const FB& TheFB, int scomp, int ncomp)
         masks.reserve(N_locs);
     }
 
-    for (int i = 0; i < N_locs; ++i)
-    {
+#ifdef STASHED_BUFFERS
+    Vector<Box> sbox(N_locs);
+    Vector<Box> dbox(N_locs);
+    for (int i = 0; i < N_locs; ++i) {
         const CopyComTag& tag = LocTags[i];
+        sbox[i] = tag.sbox;
+        dbox[i] = tag.dbox;
+    }
 
-        BL_ASSERT(distributionMap[tag.dstIndex] == ParallelDescriptor::MyProc());
-        BL_ASSERT(distributionMap[tag.srcIndex] == ParallelDescriptor::MyProc());
+    bool found = false;
+    FBLocalDeviceTagsNwarpsData stashed_buf = {nullptr, nullptr, Vector<Box>(0), Vector<Box>(0), 0, 0, 0, 0};
 
-        int li = this->localindex(tag.dstIndex);
-        loc_copy_tags.push_back
-            ({this->atLocalIdx(li).array(),
-              this->fabPtr(tag.srcIndex)->const_array(),
-              tag.dbox,
-              (tag.sbox.smallEnd()-tag.dbox.smallEnd()).dim3()});
-
-        if (maskfabs.size() > 0) {
-            if (!maskfabs[li].isAllocated()) {
-                maskfabs[li].resize(this->atLocalIdx(li).box());
-            }
-            masks.emplace_back(Array4Tag<int>{maskfabs[li].array()});
+    /* search backwards */
+    Vector<FBLocalDeviceTagsNwarpsData>::reverse_iterator p = this->fblocal_device_tags_nwarps.rbegin();
+    while (p != this->fblocal_device_tags_nwarps.rend()) {
+        if (p->sbox==sbox && p->dbox==dbox) {
+            stashed_buf = *p;
+            found = true;
+            break;
         }
+        p++;
+    }
+
+    if (found && stashed_buf.ntags == 0) return;
+
+    if (!found) {
+#endif
+        for (int i = 0; i < N_locs; ++i)
+        {
+            const CopyComTag& tag = LocTags[i];
+
+            BL_ASSERT(distributionMap[tag.dstIndex] == ParallelDescriptor::MyProc());
+            BL_ASSERT(distributionMap[tag.srcIndex] == ParallelDescriptor::MyProc());
+
+            int li = this->localindex(tag.dstIndex);
+            loc_copy_tags.push_back
+                ({this->atLocalIdx(li).array(),
+                     this->fabPtr(tag.srcIndex)->const_array(),
+                     tag.dbox,
+                     (tag.sbox.smallEnd()-tag.dbox.smallEnd()).dim3()});
+
+            if (maskfabs.size() > 0) {
+                if (!maskfabs[li].isAllocated()) {
+                    maskfabs[li].resize(this->atLocalIdx(li).box());
+                }
+                masks.emplace_back(Array4Tag<int>{maskfabs[li].array()});
+            }
+        }
+#ifdef STASHED_BUFFERS
+        stashed_buf.ntags = loc_copy_tags.size();
+        if (stashed_buf.ntags == 0) {
+            this->fblocal_device_tags_nwarps.push_back(stashed_buf);
+            return;
+        }
+
+        stashed_buf.ntotwarps = 0;
+        Vector<int> nwarps;
+        nwarps.reserve(stashed_buf.ntags+1);
+        for (int i = 0; i < stashed_buf.ntags; ++i)
+        {
+            auto& tag = loc_copy_tags[i];
+            nwarps.push_back(stashed_buf.ntotwarps);
+            stashed_buf.ntotwarps +=  static_cast<int>((detail::get_tag_size(tag)
+                                                        + Gpu::Device::warp_size-1) / Gpu::Device::warp_size);
+        }
+        nwarps.push_back(stashed_buf.ntotwarps);
+
+        std::size_t sizeof_tags = stashed_buf.ntags*sizeof(TagType);
+        stashed_buf.offset_nwarps = Arena::align(sizeof_tags);
+        stashed_buf.sizeof_nwarps = (stashed_buf.ntags+1)*sizeof(int);
+        std::size_t total_buf_size = stashed_buf.offset_nwarps + stashed_buf.sizeof_nwarps;
+
+        stashed_buf.d_buffer = (char*)The_Arena()->alloc(total_buf_size);
+        stashed_buf.h_buffer = (char*)The_Pinned_Arena()->alloc(total_buf_size);
+
+        stashed_buf.sbox = sbox;
+        stashed_buf.dbox = dbox;
+        this->fblocal_device_tags_nwarps.push_back(stashed_buf);
+
+        std::memcpy(stashed_buf.h_buffer, loc_copy_tags.data(), sizeof_tags);
+        std::memcpy(stashed_buf.h_buffer+stashed_buf.offset_nwarps, nwarps.data(), stashed_buf.sizeof_nwarps);
+        Gpu::htod_memcpy_async(stashed_buf.d_buffer, stashed_buf.h_buffer, total_buf_size);
+#endif
     }
 
     if (maskfabs.size() > 0) {
@@ -328,10 +459,20 @@ FabArray<FAB>::FB_local_copy_gpu (const FB& TheFB, int scomp, int ncomp)
     }
 
     if (is_thread_safe) {
+#ifdef STASHED_BUFFERS
+        detail::foo<value_type>(loc_copy_tags, scomp, scomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                stashed_buf.ntags, stashed_buf.offset_nwarps, detail::CellStore<value_type>());
+#else
         detail::fab_to_fab<value_type>(loc_copy_tags, scomp, scomp, ncomp,
                                        detail::CellStore<value_type>());
+#endif
     } else {
+#ifdef STASHED_BUFFERS
+        detail::foo_atomic_cpy<value_type>(loc_copy_tags, scomp, scomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                            stashed_buf.ntags, stashed_buf.offset_nwarps, masks);
+#else
         detail::fab_to_fab_atomic_cpy<value_type>(loc_copy_tags, scomp, scomp, ncomp, masks);
+#endif
     }
 }
 
@@ -758,36 +899,102 @@ FabArray<FAB>::pack_send_buffer_gpu (FabArray<FAB> const& src, int scomp, int nc
 
     typedef Array4CopyTag<value_type> TagType;
     Vector<TagType> snd_copy_tags;
-    for (int j = 0; j < N_snds; ++j)
-    {
-        if (send_size[j] > 0)
-        {
-            std::size_t offset = send_data[j]-send_data[0];
-            char* dptr = pbuffer + offset;
-            auto const& cctc = *send_cctc[j];
-            for (auto const& tag : cctc)
-            {
-                snd_copy_tags.emplace_back(TagType{
-                    amrex::makeArray4((value_type*)(dptr), tag.sbox, ncomp),
-                    src.array(tag.srcIndex),
-                    tag.sbox,
-                    Dim3{0,0,0}
-                });
-                dptr += (tag.sbox.numPts() * ncomp * sizeof(value_type));
-            }
-            BL_ASSERT(dptr <= pbuffer + offset + send_size[j]);
+    snd_copy_tags.reserve(N_snds);
+
+#ifdef STASHED_BUFFERS
+    bool found = false;
+    FabArray<FAB> & src_nonconst = const_cast<FabArray<FAB> &>(src);
+    SendRecvDeviceTagsNwarpsData stashed_buf = {nullptr, nullptr, const_cast<Vector<char*> &>(send_data), const_cast<Vector<std::size_t> &>(send_size), 0, 0, 0, 0};
+
+    /* search backwards */
+    Vector<SendRecvDeviceTagsNwarpsData>::reverse_iterator p = src_nonconst.send_device_tags_nwarps.rbegin();
+    while (p != src_nonconst.send_device_tags_nwarps.rend()) {
+        if (p->data == send_data && p->size == send_size) {
+            stashed_buf = *p;
+            found = true;
+            break;
         }
+        p++;
     }
+
+    if (found && stashed_buf.ntags == 0) return;
+
+    if (!found) {
+#endif
+        for (int j = 0; j < N_snds; ++j)
+        {
+            if (send_size[j] > 0)
+            {
+                std::size_t offset = send_data[j]-send_data[0];
+                char* dptr = pbuffer + offset;
+                auto const& cctc = *send_cctc[j];
+                for (auto const& tag : cctc)
+                {
+                    snd_copy_tags.emplace_back(TagType{
+                        amrex::makeArray4((value_type*)(dptr), tag.sbox, ncomp),
+                        src.array(tag.srcIndex),
+                        tag.sbox,
+                        Dim3{0,0,0}
+                    });
+                    dptr += (tag.sbox.numPts() * ncomp * sizeof(value_type));
+                }
+                BL_ASSERT(dptr <= pbuffer + offset + send_size[j]);
+            }
+        }
+#ifdef STASHED_BUFFERS
+        stashed_buf.ntags = snd_copy_tags.size();
+        if (stashed_buf.ntags == 0) {
+            src_nonconst.send_device_tags_nwarps.push_back(stashed_buf);
+            return;
+        }
+
+        /* For some reason, this code does not work. I don't understand why */
+        /* Save this stashed buffer for future lookup */
+        //detail::build_device_tags_nwarps(snd_copy_tags, &stashed_buf);
+        //src_nonconst.send_device_tags_nwarps.push_back(stashed_buf);
+
+        Vector<int> nwarps;
+        nwarps.reserve(stashed_buf.ntags+1);
+        stashed_buf.ntotwarps=0;
+        for (int i = 0; i < stashed_buf.ntags; ++i)
+        {
+            auto& tag = snd_copy_tags[i];
+            nwarps.push_back(stashed_buf.ntotwarps);
+            stashed_buf.ntotwarps += static_cast<int>((detail::get_tag_size(tag)
+                                                       + Gpu::Device::warp_size-1) / Gpu::Device::warp_size);
+        }
+        nwarps.push_back(stashed_buf.ntotwarps);
+
+        std::size_t sizeof_tags = stashed_buf.ntags*sizeof(TagType);
+        stashed_buf.offset_nwarps = Arena::align(sizeof_tags);
+        stashed_buf.sizeof_nwarps = (stashed_buf.ntags+1)*sizeof(int);
+        std::size_t total_buf_size = stashed_buf.offset_nwarps + stashed_buf.sizeof_nwarps;
+
+        stashed_buf.d_buffer = (char*)The_Arena()->alloc(total_buf_size);
+        stashed_buf.h_buffer = (char*)The_Pinned_Arena()->alloc(total_buf_size);
+
+        std::memcpy(stashed_buf.h_buffer, snd_copy_tags.data(), sizeof_tags);
+        std::memcpy(stashed_buf.h_buffer+stashed_buf.offset_nwarps, nwarps.data(), stashed_buf.sizeof_nwarps);
+        Gpu::htod_memcpy_async(stashed_buf.d_buffer, stashed_buf.h_buffer, total_buf_size);
+
+        src_nonconst.send_device_tags_nwarps.push_back(stashed_buf);
+    }
+
+    detail::foo<value_type>(snd_copy_tags, scomp, 0, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                            stashed_buf.ntags, stashed_buf.offset_nwarps, detail::CellStore<value_type>());
+
+#else
 
     detail::fab_to_fab<value_type>(snd_copy_tags, scomp, 0, ncomp,
                                    detail::CellStore<value_type>());
+#endif
 
     // There is Gpu::synchronize in fab_to_fab.
 
     if (pbuffer != send_data[0]) {
         Gpu::copyAsync(Gpu::deviceToHost,pbuffer,pbuffer+szbuffer,send_data[0]);
-        Gpu::synchronize();
-        The_Arena()->free(pbuffer);
+        Gpu::streamSynchronize();
+        //The_Arena()->free(pbuffer);
     }
 }
 
@@ -833,34 +1040,91 @@ FabArray<FAB>::unpack_recv_buffer_gpu (FabArray<FAB>& dst, int dcomp, int ncomp,
         }
     }
 
-    for (int k = 0; k < N_rcvs; ++k)
-    {
-        if (recv_size[k] > 0)
-        {
-            std::size_t offset = recv_data[k]-recv_data[0];
-            const char* dptr = pbuffer + offset;
-            auto const& cctc = *recv_cctc[k];
-            for (auto const& tag : cctc)
-            {
-                const int li = dst.localindex(tag.dstIndex);
-                recv_copy_tags.emplace_back(TagType{
-                    dst.atLocalIdx(li).array(),
-                    amrex::makeArray4((value_type const*)(dptr), tag.dbox, ncomp),
-                    tag.dbox,
-                    Dim3{0,0,0}
-                });
-                dptr += tag.dbox.numPts() * ncomp * sizeof(value_type);
+#ifdef STASHED_BUFFERS
+    bool found = false;
+    SendRecvDeviceTagsNwarpsData stashed_buf = {nullptr, nullptr, const_cast<Vector<char*>&>(recv_data), const_cast<Vector<std::size_t>&>(recv_size), 0, 0, 0, 0};
 
-                if (maskfabs.size() > 0) {
-                    if (!maskfabs[li].isAllocated()) {
-                        maskfabs[li].resize(dst.atLocalIdx(li).box());
-                    }
-                    masks.emplace_back(Array4Tag<int>{maskfabs[li].array()});
-                }
-            }
-            BL_ASSERT(dptr <= pbuffer + offset + recv_size[k]);
+    /* search backwards */
+    Vector<SendRecvDeviceTagsNwarpsData>::reverse_iterator p = dst.recv_device_tags_nwarps.rbegin();
+    while (p !=dst.recv_device_tags_nwarps.rend()) {
+        if (p->data == recv_data && p->size == recv_size) {
+            stashed_buf = *p;
+            found = true;
+            break;
         }
+        p++;
     }
+
+    if (found && stashed_buf.ntags == 0) return;
+
+    if (!found) {
+#endif
+        for (int k = 0; k < N_rcvs; ++k)
+        {
+            if (recv_size[k] > 0)
+            {
+                std::size_t offset = recv_data[k]-recv_data[0];
+                const char* dptr = pbuffer + offset;
+                auto const& cctc = *recv_cctc[k];
+                for (auto const& tag : cctc)
+                {
+                    const int li = dst.localindex(tag.dstIndex);
+                    recv_copy_tags.emplace_back(TagType{
+                            dst.atLocalIdx(li).array(),
+                            amrex::makeArray4((value_type const*)(dptr), tag.dbox, ncomp),
+                            tag.dbox,
+                            Dim3{0,0,0}
+                        });
+                    dptr += tag.dbox.numPts() * ncomp * sizeof(value_type);
+
+                    if (maskfabs.size() > 0) {
+                        if (!maskfabs[li].isAllocated()) {
+                            maskfabs[li].resize(dst.atLocalIdx(li).box());
+                        }
+                        masks.emplace_back(Array4Tag<int>{maskfabs[li].array()});
+                    }
+                }
+                BL_ASSERT(dptr <= pbuffer + offset + recv_size[k]);
+            }
+        }
+#ifdef STASHED_BUFFERS
+        stashed_buf.ntags = recv_copy_tags.size();
+        if (stashed_buf.ntags == 0) {
+            (dst.recv_device_tags_nwarps).push_back(stashed_buf);
+            return;
+        }
+
+        /* For some reason, this code does not work. I don't understand why */
+        /* Save this stashed buffer for future lookup */
+        //detail::build_device_tags_nwarps(recv_copy_tags, &stashed_buf);
+        //(dst.recv_device_tags_nwarps).push_back(stashed_buf);
+
+        Vector<int> nwarps;
+        nwarps.reserve(stashed_buf.ntags+1);
+        for (int i = 0; i < stashed_buf.ntags; ++i)
+        {
+            auto& tag = recv_copy_tags[i];
+            nwarps.push_back(stashed_buf.ntotwarps);
+            stashed_buf.ntotwarps +=  static_cast<int>((detail::get_tag_size(tag)
+                                                        + Gpu::Device::warp_size-1) / Gpu::Device::warp_size);
+        }
+        nwarps.push_back(stashed_buf.ntotwarps);
+
+        std::size_t sizeof_tags = stashed_buf.ntags*sizeof(TagType);
+        stashed_buf.offset_nwarps = Arena::align(sizeof_tags);
+        stashed_buf.sizeof_nwarps = (stashed_buf.ntags+1)*sizeof(int);
+        std::size_t total_buf_size = stashed_buf.offset_nwarps + stashed_buf.sizeof_nwarps;
+
+        stashed_buf.d_buffer = (char*)The_Arena()->alloc(total_buf_size);
+        stashed_buf.h_buffer = (char*)The_Pinned_Arena()->alloc(total_buf_size);
+
+        std::memcpy(stashed_buf.h_buffer, recv_copy_tags.data(), sizeof_tags);
+        std::memcpy(stashed_buf.h_buffer+stashed_buf.offset_nwarps, nwarps.data(), stashed_buf.sizeof_nwarps);
+        Gpu::htod_memcpy_async(stashed_buf.d_buffer, stashed_buf.h_buffer, total_buf_size);
+
+        (dst.recv_device_tags_nwarps).push_back(stashed_buf);
+    }
+#endif
 
     if (maskfabs.size() > 0) {
         amrex::ParallelFor(masks,
@@ -873,19 +1137,39 @@ FabArray<FAB>::unpack_recv_buffer_gpu (FabArray<FAB>& dst, int dcomp, int ncomp,
     if (op == FabArrayBase::COPY)
     {
         if (is_thread_safe) {
+#ifdef STASHED_BUFFERS
+            detail::foo<value_type>(recv_copy_tags, 0, dcomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                    stashed_buf.ntags, stashed_buf.offset_nwarps, detail::CellStore<value_type>());
+#else
             detail::fab_to_fab<value_type>(recv_copy_tags, 0, dcomp, ncomp,
                                            detail::CellStore<value_type>());
+#endif
         } else {
+#ifdef STASHED_BUFFERS
+            detail::foo_atomic_cpy<value_type>(recv_copy_tags, 0, dcomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                               stashed_buf.ntags, stashed_buf.offset_nwarps, masks);
+#else
             detail::fab_to_fab_atomic_cpy<value_type>(recv_copy_tags, 0, dcomp, ncomp, masks);
+#endif
         }
     }
     else
     {
         if (is_thread_safe) {
+#ifdef STASHED_BUFFERS
+            detail::foo<value_type>(recv_copy_tags, 0, dcomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                    stashed_buf.ntags, stashed_buf.offset_nwarps, detail::CellAdd<value_type>());
+#else
             detail::fab_to_fab<value_type>(recv_copy_tags, 0, dcomp, ncomp,
                                            detail::CellAdd<value_type>());
+#endif
         } else {
+#ifdef STASHED_BUFFERS
+            detail::foo_atomic_add<value_type>(recv_copy_tags, 0, dcomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                               stashed_buf.ntags, stashed_buf.offset_nwarps, masks);
+#else
             detail::fab_to_fab_atomic_add<value_type>(recv_copy_tags, 0, dcomp, ncomp, masks);
+#endif
         }
     }
 

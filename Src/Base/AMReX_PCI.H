@@ -82,6 +82,11 @@ FabArray<FAB>::PC_local_cpu (const CPC& thecpc, FabArray<FAB> const& src,
     }
 }
 
+#ifndef PCI_STASHED_BUFFERS
+#define PCI_STASHED_BUFFERS
+#endif
+//#undef PCI_STASHED_BUFFERS
+
 #ifdef AMREX_USE_GPU
 template <class FAB>
 void
@@ -115,9 +120,9 @@ FabArray<FAB>::PC_local_gpu (const CPC& thecpc, FabArray<FAB> const& src,
             int li = this->localindex(tag.dstIndex);
             loc_copy_tags.push_back
                 ({this->atLocalIdx(li).array(),
-                  src.fabPtr(tag.srcIndex)->const_array(),
-                  tag.dbox,
-                  (tag.sbox.smallEnd()-tag.dbox.smallEnd()).dim3()});
+                     src.fabPtr(tag.srcIndex)->const_array(),
+                     tag.dbox,
+                     (tag.sbox.smallEnd()-tag.dbox.smallEnd()).dim3()});
 
             if (maskfabs.size() > 0) {
                 if (!maskfabs[li].isAllocated()) {
@@ -127,6 +132,59 @@ FabArray<FAB>::PC_local_gpu (const CPC& thecpc, FabArray<FAB> const& src,
             }
         }
     }
+
+#ifdef PCI_STASHED_BUFFERS
+    bool found = false;
+    PCLocalDeviceTagsNwarpsData stashed_buf = {nullptr, nullptr, 0, 0, 0, 0, 0};
+
+    /* search backwards */
+    Vector<PCLocalDeviceTagsNwarpsData>::reverse_iterator p = this->pclocal_device_tags_nwarps.rbegin();
+    while (p != this->pclocal_device_tags_nwarps.rend()) {
+        if (memcmp((this->pclocal_device_tags_nwarps.back()).h_buffer, loc_copy_tags.data(), (this->pclocal_device_tags_nwarps.back()).nbytes)==0) {
+            stashed_buf = *p;
+            found = true;
+            break;
+        }
+        p++;
+    }
+
+    if (found && stashed_buf.ntags == 0) return;
+
+    if (!found) {
+        stashed_buf.ntags = loc_copy_tags.size();
+        if (stashed_buf.ntags == 0) {
+            this->pclocal_device_tags_nwarps.push_back(stashed_buf);
+            return;
+        }
+
+        stashed_buf.ntotwarps = 0;
+        Vector<int> nwarps;
+        nwarps.reserve(stashed_buf.ntags+1);
+        for (int i = 0; i < stashed_buf.ntags; ++i)
+        {
+            auto& tag = loc_copy_tags[i];
+            nwarps.push_back(stashed_buf.ntotwarps);
+            stashed_buf.ntotwarps +=  static_cast<int>((detail::get_tag_size(tag)
+                                                        + Gpu::Device::warp_size-1) / Gpu::Device::warp_size);
+        }
+        nwarps.push_back(stashed_buf.ntotwarps);
+
+        std::size_t sizeof_tags = stashed_buf.ntags*sizeof(TagType);
+        stashed_buf.offset_nwarps = Arena::align(sizeof_tags);
+        stashed_buf.sizeof_nwarps = (stashed_buf.ntags+1)*sizeof(int);
+        std::size_t total_buf_size = stashed_buf.offset_nwarps + stashed_buf.sizeof_nwarps;
+
+        stashed_buf.d_buffer = (char*)The_Arena()->alloc(total_buf_size);
+        stashed_buf.h_buffer = (char*)The_Pinned_Arena()->alloc(total_buf_size);
+        stashed_buf.nbytes = sizeof_tags;
+
+        this->pclocal_device_tags_nwarps.push_back(stashed_buf);
+
+        std::memcpy(stashed_buf.h_buffer, loc_copy_tags.data(), sizeof_tags);
+        std::memcpy(stashed_buf.h_buffer+stashed_buf.offset_nwarps, nwarps.data(), stashed_buf.sizeof_nwarps);
+        Gpu::htod_memcpy_async(stashed_buf.d_buffer, stashed_buf.h_buffer, total_buf_size);
+    }
+#endif
 
     if (maskfabs.size() > 0) {
         amrex::ParallelFor(masks,
@@ -139,19 +197,39 @@ FabArray<FAB>::PC_local_gpu (const CPC& thecpc, FabArray<FAB> const& src,
     if (op == FabArrayBase::COPY)
     {
         if (is_thread_safe) {
+#ifdef PCI_STASHED_BUFFERS
+            detail::foo<value_type>(loc_copy_tags, scomp, dcomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                    stashed_buf.ntags, stashed_buf.offset_nwarps, detail::CellStore<value_type>());
+#else
             detail::fab_to_fab<value_type>(loc_copy_tags, scomp, dcomp, ncomp,
                                            detail::CellStore<value_type>());
+#endif
         } else {
+#ifdef PCI_STASHED_BUFFERS
+            detail::foo_atomic_cpy<value_type>(loc_copy_tags, scomp, dcomp, ncomp, stashed_buf.d_buffer,
+                                               stashed_buf.ntotwarps, stashed_buf.ntags, stashed_buf.offset_nwarps, masks);
+#else
             detail::fab_to_fab_atomic_cpy<value_type>(loc_copy_tags, scomp, dcomp, ncomp, masks);
+#endif
         }
     }
     else
     {
         if (is_thread_safe) {
+#ifdef PCI_STASHED_BUFFERS
+            detail::foo<value_type>(loc_copy_tags, scomp, dcomp, ncomp, stashed_buf.d_buffer, stashed_buf.ntotwarps,
+                                    stashed_buf.ntags, stashed_buf.offset_nwarps, detail::CellAdd<value_type>());
+#else
             detail::fab_to_fab<value_type>(loc_copy_tags, scomp, dcomp, ncomp,
-                                           detail::CellAdd<value_type>());
+                                            detail::CellAdd<value_type>());
+#endif
         } else {
+#ifdef PCI_STASHED_BUFFERS
+            detail::foo_atomic_add<value_type>(loc_copy_tags, scomp, dcomp, ncomp, stashed_buf.d_buffer,
+                                               stashed_buf.ntotwarps, stashed_buf.ntags, stashed_buf.offset_nwarps, masks);
+#else
             detail::fab_to_fab_atomic_add<value_type>(loc_copy_tags, scomp, dcomp, ncomp, masks);
+#endif
         }
     }
 }
