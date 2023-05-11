@@ -34,16 +34,19 @@ namespace {
     Arena* the_managed_arena = nullptr;
     Arena* the_pinned_arena = nullptr;
     Arena* the_cpu_arena = nullptr;
+    Arena* the_gpuawarempi_arena = nullptr;
 
     Long the_arena_init_size = 0L;
     Long the_device_arena_init_size = 1024*1024*8;
     Long the_managed_arena_init_size = 1024*1024*8;
     Long the_pinned_arena_init_size = 1024*1024*8;
+    Long the_gpuawarempi_arena_init_size = 1024*1024*8;
     Long the_arena_release_threshold = std::numeric_limits<Long>::max();
     Long the_device_arena_release_threshold = std::numeric_limits<Long>::max();
     Long the_managed_arena_release_threshold = std::numeric_limits<Long>::max();
     Long the_pinned_arena_release_threshold = std::numeric_limits<Long>::max();
     Long the_async_arena_release_threshold = std::numeric_limits<Long>::max();
+    Long the_gpuawarempi_arena_release_threshold = std::numeric_limits<Long>::max();
 #ifdef AMREX_USE_HIP
     bool the_arena_is_managed = false; // xxxxx HIP FIX HERE
 #else
@@ -276,6 +279,7 @@ Arena::Initialize ()
     BL_ASSERT(the_managed_arena == nullptr || the_managed_arena == The_BArena());
     BL_ASSERT(the_pinned_arena == nullptr);
     BL_ASSERT(the_cpu_arena == nullptr || the_cpu_arena == The_BArena());
+    BL_ASSERT(the_gpuawarempi_arena == nullptr || the_device_arena == The_BArena());
 
 #ifdef AMREX_USE_GPU
 #ifdef AMREX_USE_SYCL
@@ -292,10 +296,12 @@ Arena::Initialize ()
     pp.queryAdd( "the_device_arena_init_size",  the_device_arena_init_size);
     pp.queryAdd("the_managed_arena_init_size", the_managed_arena_init_size);
     pp.queryAdd( "the_pinned_arena_init_size",  the_pinned_arena_init_size);
+    pp.queryAdd( "the_gpuawarempi_arena_init_size",  the_gpuawarempi_arena_init_size);
     pp.queryAdd(       "the_arena_release_threshold" ,         the_arena_release_threshold);
     pp.queryAdd( "the_device_arena_release_threshold",  the_device_arena_release_threshold);
     pp.queryAdd("the_managed_arena_release_threshold", the_managed_arena_release_threshold);
     pp.queryAdd( "the_pinned_arena_release_threshold",  the_pinned_arena_release_threshold);
+    pp.queryAdd( "the_gpuawarempi_arena_release_threshold",  the_gpuawarempi_arena_release_threshold);
     pp.queryAdd(  "the_async_arena_release_threshold",   the_async_arena_release_threshold);
     pp.queryAdd("the_arena_is_managed", the_arena_is_managed);
     pp.queryAdd("abort_on_out_of_gpu_memory", abort_on_out_of_gpu_memory);
@@ -326,6 +332,35 @@ Arena::Initialize ()
 #endif
 #else
         the_arena = The_BArena();
+#endif
+    }
+
+    {
+#if defined(BL_COALESCE_FABS) || defined(AMREX_USE_GPU)
+        ArenaInfo ai{};
+        ai.SetReleaseThreshold(the_gpuawarempi_arena_release_threshold);
+        if (the_arena_is_managed) {
+            the_gpuawarempi_arena = new CArena(0, ai.SetPreferred());
+#ifdef AMREX_USE_GPU
+            the_gpuawarempi_arena->registerForProfiling("Managed Memory");
+#else
+            the_gpuawarempi_arena->registerForProfiling("Cpu Memory");
+#endif
+        } else {
+            the_gpuawarempi_arena = new CArena(0, ai.SetDeviceMemory());
+#ifdef AMREX_USE_GPU
+            the_gpuawarempi_arena->registerForProfiling("Device Memory");
+#else
+            the_gpuawarempi_arena->registerForProfiling("Cpu Memory");
+#endif
+        }
+#ifdef AMREX_USE_GPU
+        BL_PROFILE("The_GpuAwareMPI_Arena::Initialize()");
+        void *p = the_gpuawarempi_arena->alloc(static_cast<std::size_t>(the_gpuawarempi_arena_init_size));
+        the_gpuawarempi_arena->free(p);
+#endif
+#else
+        the_gpuawarempi_arena = The_BArena();
 #endif
     }
 
@@ -422,6 +457,12 @@ Arena::PrintUsage ()
             p->PrintUsage("The         Arena");
         }
     }
+    if (The_GpuAwareMPI_Arena() && The_GpuAwareMPI_Arena() != The_Arena()) {
+        auto* p = dynamic_cast<CArena*>(The_GpuAwareMPI_Arena());
+        if (p) {
+            p->PrintUsage("The  GpuAwareMPI Arena");
+        }
+    }
     if (The_Device_Arena() && The_Device_Arena() != The_Arena()) {
         auto* p = dynamic_cast<CArena*>(The_Device_Arena());
         if (p) {
@@ -465,6 +506,12 @@ Arena::PrintUsageToFiles (const std::string& filename, const std::string& messag
         auto* p = dynamic_cast<CArena*>(The_Arena());
         if (p) {
             p->PrintUsage(ofs, "The         Arena", "    ");
+        }
+    }
+    if (The_GpuAwareMPI_Arena() && The_GpuAwareMPI_Arena() != The_Arena()) {
+        auto* p = dynamic_cast<CArena*>(The_GpuAwareMPI_Arena());
+        if (p) {
+            p->PrintUsage(ofs, "The  GpuAwareMPI Arena", "    ");
         }
     }
     if (The_Device_Arena() && The_Device_Arena() != The_Arena()) {
@@ -528,6 +575,11 @@ Arena::Finalize ()
         the_arena = nullptr;
     }
 
+	 if (!dynamic_cast<BArena*>(the_gpuawarempi_arena)) {
+        delete the_gpuawarempi_arena;
+        the_gpuawarempi_arena = nullptr;
+    }
+
     delete the_async_arena;
     the_async_arena = nullptr;
 
@@ -545,6 +597,16 @@ The_Arena ()
 {
     if        (the_arena) {
         return the_arena;
+    } else {
+        return The_Null_Arena();
+    }
+}
+
+Arena*
+The_GpuAwareMPI_Arena ()
+{
+    if        (the_gpuawarempi_arena) {
+        return the_gpuawarempi_arena;
     } else {
         return The_Null_Arena();
     }

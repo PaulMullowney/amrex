@@ -36,8 +36,7 @@ ifeq ($(USE_GPU_RDC),TRUE)
 endif
 
 # amd gpu target
-HIPCC_FLAGS += --offload-arch=$(AMD_ARCH)
-
+HIPCC_FLAGS += --offload-arch=$(AMD_ARCH) -ffast-math
 # pthread
 HIPCC_FLAGS += -pthread
 
@@ -136,8 +135,9 @@ ifeq ($(HIP_COMPILER),clang)
   ifeq ($(USE_ROCTX),TRUE)
     CXXFLAGS += -DAMREX_USE_ROCTX
     HIPCC_FLAGS += -DAMREX_USE_ROCTX
-    LIBRARY_LOCATIONS += $(ROC_PATH)/lib
-    LIBRARIES += -Wl,--rpath=$(ROC_PATH)/lib -lroctracer64 -lroctx64
+    SYSTEM_INCLUDE_LOCATIONS += $(HIP_PATH)/../include/roctracer $(HIP_PATH)/../include/roctracer/ext $(HIP_PATH)/../include/rocprofiler
+    LIBRARY_LOCATIONS += $(HIP_PATH)/../lib
+    LIBRARIES += -Wl,--rpath=$(HIP_PATH)/../lib -lroctracer64 -lroctx64
   endif
 
   # hipcc passes a lot of unused arguments to clang
