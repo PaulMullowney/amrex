@@ -39,11 +39,14 @@ Elixir::clear () noexcept
     {
         if (!m_pa.empty()) {
 #if defined(AMREX_USE_CUDA) || defined(AMREX_USE_HIP)
-            auto p = new Vector<std::pair<void*,Arena*> >(std::move(m_pa));
 #if defined(AMREX_USE_HIP)
-            AMREX_HIP_SAFE_CALL ( hipStreamAddCallback(Gpu::gpuStream(),
-                                                       amrex_elixir_delete, (void*)p, 0));
+            // xxxxx HIP patch 8/21/2023 PJM
+            Gpu::streamSynchronize();
+            for (auto const& pa : m_pa) {
+                pa.second->free(pa.first);
+            }
 #elif defined(AMREX_USE_CUDA)
+            auto p = new Vector<std::pair<void*,Arena*> >(std::move(m_pa));
             AMREX_CUDA_SAFE_CALL(cudaLaunchHostFunc(Gpu::gpuStream(),
                                                     amrex_elixir_delete, (void*)p));
 #endif

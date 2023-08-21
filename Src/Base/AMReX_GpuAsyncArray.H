@@ -75,13 +75,15 @@ public:
         {
             if (d_data != nullptr) {
 #if defined(AMREX_USE_CUDA) || defined(AMREX_USE_HIP)
+#if defined(AMREX_USE_HIP)
+                // xxxxx HIP patch 8/21/2023 PJM
+                Gpu::streamSynchronize();
+                The_Arena()->free(d_data);
+                The_Pinned_Arena()->free(h_data);
+#elif defined(AMREX_USE_CUDA)
                 T** p = static_cast<T**>(std::malloc(2*sizeof(T*)));
                 p[0] = d_data;
                 p[1] = h_data;
-#if defined(AMREX_USE_HIP)
-                AMREX_HIP_SAFE_CALL ( hipStreamAddCallback(Gpu::gpuStream(),
-                                                           amrex_asyncarray_delete, p, 0));
-#elif defined(AMREX_USE_CUDA)
                 AMREX_CUDA_SAFE_CALL(cudaLaunchHostFunc(Gpu::gpuStream(),
                                                         amrex_asyncarray_delete, p));
 #endif
