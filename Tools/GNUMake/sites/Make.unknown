@@ -1,7 +1,3 @@
-ifeq ($(USE_HIP),TRUE)
-  AMD_ARCH=gfx942
-endif
-
 ifeq ($(USE_MPI),TRUE)
 
   INCLUDE_LOCATIONS += $(MPI_HOME)/include
