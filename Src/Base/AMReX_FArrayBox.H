@@ -296,6 +296,13 @@ public:
 #else
     template <RunOn run_on=RunOn::Host>
 #endif
+    [[nodiscard]] size_t count_bad () const noexcept;
+
+#if defined(AMREX_USE_GPU)
+    template <RunOn run_on>
+#else
+    template <RunOn run_on=RunOn::Host>
+#endif
     [[nodiscard]] bool contains_nan (const Box& bx, int scomp, int ncomp) const noexcept;
     /**
     * \brief These versions return the cell index (though not the component) of
@@ -532,6 +539,37 @@ FArrayBox::contains_nan () const noexcept
 }
 
 template <RunOn run_on>
+size_t
+FArrayBox::count_bad () const noexcept
+{
+    const Real* dp = dptr;
+    const Long n = numPts()*nvar;
+#ifdef AMREX_USE_GPU
+    if (run_on == RunOn::Device && Gpu::inLaunchRegion()) {
+        ReduceOps<ReduceOpSum> reduce_op;
+        ReduceData<int> reduce_data(reduce_op);
+        using ReduceTuple = ReduceData<int>::Type;
+        reduce_op.eval(n, reduce_data,
+        [=] AMREX_GPU_DEVICE (Long i) -> ReduceTuple
+        {
+            return { static_cast<int>(amrex::isnan(dp[i])|| amrex::isinf(dp[i])) };
+        });
+        ReduceTuple hv = reduce_data.value(reduce_op);
+        return amrex::get<0>(hv);
+    } else
+#endif
+    {
+      auto count=0;
+        for (Long i = 0; i < n; i++) {
+            if (amrex::isnan(*dp++)||amrex::isinf(*dp++)) {
+	      count++;
+            }
+        }
+        return count;
+    }
+}
+
+template <RunOn run_on>
 bool
 FArrayBox::contains_nan (const Box& bx, int scomp, int ncomp) const noexcept
 {
@@ -674,6 +712,7 @@ FArrayBox::contains_inf () const noexcept
         return false;
     }
 }
+
 
 template <RunOn run_on>
 bool
