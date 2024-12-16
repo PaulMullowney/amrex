@@ -1,0 +1,16 @@
+ifeq ($(USE_MPI),TRUE)
+
+  INCLUDE_LOCATIONS += $(MPI_HOME)/include
+  LIBRARY_LOCATIONS += $(MPI_HOME)/lib
+
+  includes += $(shell CC --cray-print-opts=cflags)
+  ifneq ($(BL_NO_FORT),TRUE)
+    LIBRARIES += $(shell ftn --cray-print-opts=libs)
+  else
+    LIBRARIES += $(shell CC --cray-print-opts=libs)
+  endif
+  # for gpu aware mpi
+  ifeq ($(USE_HIP),TRUE)
+    LIBRARIES += $(PE_MPICH_GTL_DIR_amd_${AMD_ARCH}) -lmpi_gtl_hsa
+  endif
+endif
