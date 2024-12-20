@@ -92,6 +92,11 @@ ifeq ($(findstring lockhart, $(host_name)), lockhart)
   which_computer := lockhart
 endif
 
+ifeq ($(findstring tuolumne, $(host_name)), tuolumne)
+  which_site := tuolumne
+  which_computer := tuolumne
+endif
+
 ifeq ($(findstring sierra, $(host_name)), sierra)
   which_site := llnl
   which_computer := sierra
